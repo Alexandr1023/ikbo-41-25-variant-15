@@ -14,6 +14,7 @@ _LOCK_REFERENCE = re.compile(
 
 
 def _load_lock(path: Path) -> dict:
+    """Загружает Cargo.lock без вызова Cargo."""
     try:
         with path.open("rb") as lock_file:
             return tomllib.load(lock_file)
@@ -24,10 +25,12 @@ def _load_lock(path: Path) -> dict:
 
 
 def _package_id(package: dict) -> str:
+    """Формирует имя узла из пакета и версии."""
     return f"{package['name']}@{package['version']}"
 
 
 def _reference_parts(value: str) -> tuple[str, str, str]:
+    """Разбирает ссылку на пакет из списка lock-файла."""
     match = _LOCK_REFERENCE.fullmatch(value.strip())
     if not match:
         raise DependencyGraphError(
@@ -41,6 +44,7 @@ def _reference_parts(value: str) -> tuple[str, str, str]:
 
 
 def _find_referenced_package(value: str, packages: list[dict]) -> str:
+    """Находит id пакета по записи зависимости."""
     name, version, source = _reference_parts(value)
     candidates = [item for item in packages if item.get("name") == name]
     if version:
@@ -60,6 +64,7 @@ def graph_from_lock(
     path: Path,
     root_name: str,
     root_version: str,
+    root_dependencies: set[str] | None = None,
 ) -> DependencyGraph | None:
     """Возвращает граф из lock-файла или None, если корня в нём нет."""
     data = _load_lock(path)
@@ -76,9 +81,19 @@ def graph_from_lock(
     by_id = {_package_id(item): item for item in packages}
 
     def children(node: str) -> tuple[str, ...]:
+        """Возвращает прямые зависимости выбранного пакета."""
         package = by_id[node]
         values = package.get("dependencies", [])
-        resolved = (_find_referenced_package(value, packages) for value in values)
+        if node == root and root_dependencies is not None:
+            values = [
+                value
+                for value in values
+                if _reference_parts(value)[0] in root_dependencies
+            ]
+        resolved = (
+            _find_referenced_package(value, packages)
+            for value in values
+        )
         return tuple(item for item in resolved if item)
 
     return breadth_first(root, children)

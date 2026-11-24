@@ -24,15 +24,17 @@ class CargoGraphSource:
         package: CargoPackage,
         temporary_root: Path,
     ) -> None:
+        """Создаёт источник данных для корневого Cargo-пакета."""
         self.repository = repository
         self.temporary_root = temporary_root
         self.index = CrateIndex()
         self.root = f"{package.name}@{package.version}"
         self.packages: dict[str, CargoPackage] = {self.root: package}
         self.records: dict[str, dict] = {}
-        self.clones: dict[str, Path] = {}
+        self.clones: dict[tuple[str, str], Path] = {}
 
     def _local_package(self, parent: CargoPackage, dep: Dependency) -> str:
+        """Загружает зависимость из локального пути."""
         directory = parent.manifest_path.parent / dep.path
         package = load_package(directory.resolve(), dep.name)
         identifier = f"{package.name}@{package.version}"
@@ -40,24 +42,28 @@ class CargoGraphSource:
         return identifier
 
     def _git_package(self, dep: Dependency) -> str:
-        key = sha256(dep.git_url.encode("utf-8")).hexdigest()[:12]
-        repository = self.clones.get(dep.git_url)
+        """Клонирует и читает зависимость из git-репозитория."""
+        clone_key = (dep.git_url, dep.git_ref)
+        digest = sha256(repr(clone_key).encode("utf-8")).hexdigest()[:12]
+        repository = self.clones.get(clone_key)
         if repository is None:
-            repository = self.temporary_root / f"git-{key}"
-            clone_repository(dep.git_url, repository)
-            self.clones[dep.git_url] = repository
+            repository = self.temporary_root / f"git-{digest}"
+            clone_repository(dep.git_url, repository, dep.git_ref)
+            self.clones[clone_key] = repository
         package = load_package(repository, dep.name)
         identifier = f"{package.name}@{package.version}"
         self.packages[identifier] = package
         return identifier
 
     def _registry_package(self, dep: Dependency) -> str:
+        """Разрешает зависимость по sparse index crates.io."""
         record = self.index.resolve(dep.name, dep.requirement)
         identifier = self.index.package_id(record)
         self.records[identifier] = record
         return identifier
 
     def _resolve(self, parent: CargoPackage, dep: Dependency) -> str:
+        """Выбирает источник пакета по полям Cargo-зависимости."""
         if dep.path:
             return self._local_package(parent, dep)
         if dep.git_url:
@@ -65,6 +71,7 @@ class CargoGraphSource:
         return self._registry_package(dep)
 
     def _package_dependencies(self, node: str) -> tuple[Dependency, ...]:
+        """Возвращает объявления зависимостей для узла графа."""
         if node in self.packages:
             return self.packages[node].dependencies
         return self.index.dependencies(self.records[node])
@@ -90,7 +97,11 @@ class CargoGraphSource:
 
 
 def _find_lockfile(repository: Path, package: CargoPackage) -> Path:
-    candidates = (repository / "Cargo.lock", package.manifest_path.parent / "Cargo.lock")
+    """Выбирает lock-файл workspace или выбранного пакета."""
+    candidates = (
+        repository / "Cargo.lock",
+        package.manifest_path.parent / "Cargo.lock",
+    )
     return next((path for path in candidates if path.is_file()), candidates[0])
 
 
@@ -102,7 +113,17 @@ def build_cargo_graph(
     """Строит граф из Cargo.lock или из sparse index crates.io."""
     lock_path = _find_lockfile(repository, package)
     if lock_path.is_file():
-        locked = graph_from_lock(lock_path, package.name, package.version)
+        dependency_names = {
+            dependency.name
+            for dependency in package.dependencies
+            if not dependency.optional
+        }
+        locked = graph_from_lock(
+            lock_path,
+            package.name,
+            package.version,
+            dependency_names,
+        )
         if locked is not None:
             return locked
     source = CargoGraphSource(repository, package, temporary_root)

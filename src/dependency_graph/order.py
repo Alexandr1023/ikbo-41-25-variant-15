@@ -5,6 +5,8 @@ import heapq
 from dependency_graph.errors import DependencyGraphError
 from dependency_graph.graph import DependencyGraph
 
+NO_REMAINING_DEPENDENCIES = 0
+
 
 def load_order(graph: DependencyGraph) -> tuple[str, ...]:
     """Возвращает порядок dependencies-first или сообщает о цикле."""
@@ -18,7 +20,11 @@ def load_order(graph: DependencyGraph) -> tuple[str, ...]:
     for node, dependencies in graph.adjacency.items():
         for dependency in dependencies:
             dependents.setdefault(dependency, []).append(node)
-    ready = [node for node, count in remaining.items() if count == 0]
+    ready = [
+        node
+        for node, count in remaining.items()
+        if count == NO_REMAINING_DEPENDENCIES
+    ]
     heapq.heapify(ready)
     result = []
     while ready:
@@ -26,7 +32,7 @@ def load_order(graph: DependencyGraph) -> tuple[str, ...]:
         result.append(dependency)
         for parent in sorted(dependents.get(dependency, [])):
             remaining[parent] -= 1
-            if remaining[parent] == 0:
+            if remaining[parent] == NO_REMAINING_DEPENDENCIES:
                 heapq.heappush(ready, parent)
     if len(result) != len(remaining):
         cyclic = sorted(node for node, count in remaining.items() if count)

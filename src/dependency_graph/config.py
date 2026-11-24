@@ -22,6 +22,7 @@ class AppConfig:
 
 
 def _read_ini(path: Path) -> ConfigParser:
+    """Читает INI-файл и преобразует ошибки ввода."""
     parser = ConfigParser(interpolation=None)
     try:
         with path.open("r", encoding="utf-8") as config_file:
@@ -38,6 +39,7 @@ def _read_ini(path: Path) -> ConfigParser:
 
 
 def _required_values(parser: ConfigParser) -> dict[str, str]:
+    """Возвращает непустые обязательные параметры."""
     if not parser.has_section("application"):
         raise ConfigurationError("В конфигурации нет секции [application].")
     section = parser["application"]
@@ -51,6 +53,7 @@ def _required_values(parser: ConfigParser) -> dict[str, str]:
 
 
 def _parse_mode(value: str) -> bool:
+    """Преобразует строковое значение test_mode."""
     normalized = value.casefold()
     if normalized not in {"true", "false"}:
         raise ConfigurationError(
@@ -60,6 +63,7 @@ def _parse_mode(value: str) -> bool:
 
 
 def _validate_source(source: str, test_mode: bool) -> None:
+    """Проверяет тестовый путь или URL git-репозитория."""
     if test_mode:
         graph_file = Path(source)
         if not graph_file.is_file():
@@ -79,11 +83,14 @@ def _validate_source(source: str, test_mode: bool) -> None:
 
 
 def _validate_output(value: str) -> Path:
+    """Проверяет формат пути SVG-файла."""
     output_file = Path(value)
     if not value.strip():
         raise ConfigurationError("Параметр output_file не может быть пустым.")
     if output_file.suffix.casefold() != ".svg":
-        raise ConfigurationError("Файл output_file должен иметь расширение .svg.")
+        raise ConfigurationError(
+            "Файл output_file должен иметь расширение .svg."
+        )
     return output_file
 
 

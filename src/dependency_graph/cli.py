@@ -20,9 +20,17 @@ from dependency_graph.config import (
 from dependency_graph.errors import DependencyGraphError
 from dependency_graph.graph import build_test_graph, parse_test_graph
 from dependency_graph.order import load_order
+from dependency_graph.visualize import write_visualization
+
+STAGE_CONFIG = 1
+STAGE_DIRECT = 2
+STAGE_GRAPH = 3
+STAGE_ORDER = 4
+STAGE_VISUALIZE = 5
 
 
 def _arguments() -> argparse.Namespace:
+    """Разбирает аргументы командной строки."""
     parser = argparse.ArgumentParser(
         description="Построение графа зависимостей Cargo-пакета."
     )
@@ -35,13 +43,14 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--stage",
         type=int,
-        choices=range(1, 6),
+        choices=range(STAGE_CONFIG, STAGE_VISUALIZE + 1),
         help="выполнить один этап задания",
     )
     return parser.parse_args()
 
 
 def _run_stage_two(config) -> int:
+    """Показывает прямые зависимости Cargo-пакета."""
     if config.test_mode:
         try:
             graph = parse_test_graph(Path(config.source))
@@ -51,8 +60,11 @@ def _run_stage_two(config) -> int:
                 )
             dependencies = graph[config.package_name]
             print(f"Прямые зависимости {config.package_name}:")
-            for dependency in dependencies:
-                print(f"- {dependency}")
+            if dependencies:
+                for dependency in dependencies:
+                    print(f"- {dependency}")
+            else:
+                print("- Прямых зависимостей нет.")
         except DependencyGraphError as error:
             print(f"Ошибка получения данных: {error}", file=sys.stderr)
             return 2
@@ -72,6 +84,7 @@ def _run_stage_two(config) -> int:
 
 
 def _print_graph(graph) -> None:
+    """Печатает порядок BFS и рёбра графа."""
     print(f"Корневой пакет: {graph.root}")
     print("Порядок BFS: " + " -> ".join(graph.breadth_first_order))
     print("Рёбра графа:")
@@ -80,6 +93,7 @@ def _print_graph(graph) -> None:
 
 
 def _load_graph(config, temporary_root: Path):
+    """Создаёт тестовый или Cargo-граф по конфигурации."""
     if config.test_mode:
         return build_test_graph(Path(config.source), config.package_name), None
     repository = temporary_root / "repository"
@@ -90,6 +104,7 @@ def _load_graph(config, temporary_root: Path):
 
 
 def _run_stage_three(config) -> int:
+    """Запускает построение и печать транзитивного графа."""
     try:
         with tempfile.TemporaryDirectory() as temporary:
             graph, _ = _load_graph(config, Path(temporary))
@@ -101,6 +116,7 @@ def _run_stage_three(config) -> int:
 
 
 def _run_stage_four(config) -> int:
+    """Печатает порядок загрузки и сравнивает Cargo-граф."""
     try:
         with tempfile.TemporaryDirectory() as temporary:
             graph, package = _load_graph(config, Path(temporary))
@@ -110,26 +126,29 @@ def _run_stage_four(config) -> int:
                 print("Порядок загрузки: " + " -> ".join(order))
             except DependencyGraphError as error:
                 print(str(error))
-            if config.test_mode:
-                print("Сравнение с cargo tree пропущено: тестовый граф.")
-                return 0
-            if package is None:
-                return 0
-            comparison = cargo_tree_graph(
-                package.manifest_path,
-                package.name,
-            )
-            if comparison is None:
-                print("Сравнение не выполнено: cargo не установлен.")
-                return 0
-            _print_cargo_comparison(graph, comparison)
+            _compare_graph(config, graph, package)
     except (DependencyGraphError, OSError) as error:
         print(f"Ошибка сравнения: {error}", file=sys.stderr)
         return 2
     return 0
 
 
+def _compare_graph(config, graph, package) -> None:
+    """Сравнивает граф с cargo tree, если данные доступны."""
+    if config.test_mode:
+        print("Сравнение с cargo tree пропущено: тестовый граф.")
+        return
+    if package is None:
+        return
+    comparison = cargo_tree_graph(package.manifest_path, package.name)
+    if comparison is None:
+        print("Сравнение не выполнено: cargo не установлен.")
+        return
+    _print_cargo_comparison(graph, comparison)
+
+
 def _print_cargo_comparison(graph, comparison) -> None:
+    """Печатает порядок и различия между двумя графами."""
     missing, extra = edge_difference(graph, comparison)
     try:
         cargo_order = load_order(comparison)
@@ -148,6 +167,63 @@ def _print_cargo_comparison(graph, comparison) -> None:
     )
 
 
+def _run_stage_five(config) -> int:
+    """Создаёт D2-диаграмму и SVG-файл."""
+    try:
+        with tempfile.TemporaryDirectory() as temporary:
+            graph, package = _load_graph(config, Path(temporary))
+            svg_path, d2_path = write_visualization(
+                graph,
+                config.output_file,
+            )
+            print(f"D2-диаграмма сохранена: {d2_path}")
+            print(f"Изображение SVG сохранено: {svg_path}")
+            _compare_graph(config, graph, package)
+    except (DependencyGraphError, OSError) as error:
+        print(f"Ошибка визуализации: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _run_all(config) -> int:
+    """Выполняет все этапы в одной загрузке репозитория."""
+    try:
+        with tempfile.TemporaryDirectory() as temporary:
+            graph, package = _load_graph(config, Path(temporary))
+            _print_pipeline(config, graph, package)
+    except (DependencyGraphError, OSError) as error:
+        print(f"Ошибка выполнения: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _print_pipeline(config, graph, package) -> None:
+    """Показывает результаты пяти этапов анализа."""
+    print(format_config(config))
+    dependencies = (
+        graph.adjacency.get(graph.root, ())
+        if package is None
+        else dependency_lines(package)
+    )
+    print("\nЭтап 2. Прямые зависимости:")
+    if dependencies:
+        for dependency in dependencies:
+            print(f"- {dependency}")
+    else:
+        print("- Прямых зависимостей нет.")
+    print("\nЭтап 3. Граф BFS:")
+    _print_graph(graph)
+    print("\nЭтап 4. Порядок загрузки:")
+    try:
+        print(" -> ".join(load_order(graph)))
+    except DependencyGraphError as error:
+        print(str(error))
+    _compare_graph(config, graph, package)
+    svg_path, d2_path = write_visualization(graph, config.output_file)
+    print(f"\nD2-диаграмма сохранена: {d2_path}")
+    print(f"Изображение SVG сохранено: {svg_path}")
+
+
 def main() -> int:
     """Запускает выбранный этап приложения."""
     args = _arguments()
@@ -156,17 +232,19 @@ def main() -> int:
     except ConfigurationError as error:
         print(f"Ошибка конфигурации: {error}", file=sys.stderr)
         return 2
-    if args.stage == 1:
+    if args.stage == STAGE_CONFIG:
         print(format_config(config))
         return 0
-    if args.stage == 2:
+    if args.stage == STAGE_DIRECT:
         return _run_stage_two(config)
-    if args.stage == 3:
+    if args.stage == STAGE_GRAPH:
         return _run_stage_three(config)
-    if args.stage == 4:
+    if args.stage == STAGE_ORDER:
         return _run_stage_four(config)
+    if args.stage == STAGE_VISUALIZE:
+        return _run_stage_five(config)
     if args.stage is None:
-        return _run_stage_three(config)
+        return _run_all(config)
     print("Выбранный этап ещё не реализован.")
     return 0
 

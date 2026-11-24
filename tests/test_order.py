@@ -16,6 +16,7 @@ class OrderTests(unittest.TestCase):
     """Проверяет порядок зависимостей и обработку циклов."""
 
     def test_dependencies_load_before_the_root(self) -> None:
+        """Располагает зависимости раньше корневого пакета."""
         graph = build_test_graph(FIXTURES / "alpha.graph", "ALPHA")
         self.assertEqual(
             load_order(graph),
@@ -23,11 +24,13 @@ class OrderTests(unittest.TestCase):
         )
 
     def test_cycle_has_no_loading_order(self) -> None:
+        """Сообщает, что цикл исключает порядок загрузки."""
         graph = build_test_graph(FIXTURES / "beta.graph", "BETA")
         with self.assertRaises(DependencyGraphError):
             load_order(graph)
 
     def test_cargo_tree_is_converted_to_edges(self) -> None:
+        """Сохраняет связи из штатного дерева Cargo."""
         output = (
             "root v1.0.0\n"
             "├── alpha v1.0.0\n"

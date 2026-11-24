@@ -4,6 +4,6 @@ __pycache__/
 venv/
 .pytest_cache/
 .coverage
-dependency-graph.svg
-dependency-graph.d2
+*.svg
+*.d2
 

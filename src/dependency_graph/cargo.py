@@ -15,6 +15,7 @@ class Dependency:
     name: str
     requirement: str
     git_url: str = ""
+    git_ref: str = ""
     path: str = ""
     optional: bool = False
 
@@ -29,11 +30,15 @@ class CargoPackage:
     dependencies: tuple[Dependency, ...]
 
 
-def clone_repository(url: str, destination: Path) -> None:
+def clone_repository(url: str, destination: Path, ref: str = "") -> None:
     """Клонирует исходный репозиторий для чтения манифеста."""
     try:
+        command = ["git", "clone", "--depth", "1"]
+        if ref:
+            command.append("--no-checkout")
+        command.extend((url, str(destination)))
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(destination)],
+            command,
             capture_output=True,
             text=True,
             timeout=180,
@@ -45,10 +50,44 @@ def clone_repository(url: str, destination: Path) -> None:
         ) from error
     if result.returncode:
         detail = result.stderr.strip() or "git clone завершился с ошибкой"
-        raise DependencyGraphError(f"Не удалось загрузить репозиторий: {detail}")
+        message = f"Не удалось загрузить репозиторий: {detail}"
+        raise DependencyGraphError(message)
+    if ref:
+        _checkout_ref(destination, ref)
+
+
+def _checkout_ref(repository: Path, ref: str) -> None:
+    """Загружает и переключает репозиторий на branch, tag или rev."""
+    if ref.startswith("-") or any(char.isspace() for char in ref):
+        raise DependencyGraphError("Некорректный git ref зависимости.")
+    commands = (
+        ["git", "-C", str(repository), "fetch", "--depth", "1", "origin", ref],
+        ["git", "-C", str(repository), "checkout", "--detach", "FETCH_HEAD"],
+    )
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise DependencyGraphError(
+                f"Не удалось выбрать git ref {ref}: {error}"
+            ) from error
+        if result.returncode:
+            detail = result.stderr.strip()
+            if not detail:
+                detail = "git checkout завершился с ошибкой"
+            raise DependencyGraphError(
+                f"Не удалось выбрать git ref {ref}: {detail}"
+            )
 
 
 def _read_manifest(path: Path) -> dict:
+    """Загружает TOML-манифест пакета."""
     try:
         with path.open("rb") as manifest_file:
             return tomllib.load(manifest_file)
@@ -59,6 +98,7 @@ def _read_manifest(path: Path) -> dict:
 
 
 def _manifest_paths(repository: Path) -> list[Path]:
+    """Находит Cargo.toml, исключая git-объекты и сборку."""
     paths = []
     for path in repository.rglob("Cargo.toml"):
         if ".git" in path.parts or "target" in path.parts:
@@ -68,6 +108,7 @@ def _manifest_paths(repository: Path) -> list[Path]:
 
 
 def _find_package(repository: Path, name: str) -> tuple[Path, dict]:
+    """Находит пакет с указанным именем в репозитории."""
     for path in _manifest_paths(repository):
         manifest = _read_manifest(path)
         package = manifest.get("package", {})
@@ -78,15 +119,30 @@ def _find_package(repository: Path, name: str) -> tuple[Path, dict]:
     )
 
 
+def _workspace_manifest(repository: Path) -> dict:
+    """Находит ближайший workspace-манифест среди родителей."""
+    fallback = {}
+    for directory in (repository, *repository.parents):
+        path = directory / "Cargo.toml"
+        if not path.is_file():
+            continue
+        manifest = _read_manifest(path)
+        if not fallback:
+            fallback = manifest
+        if "workspace" in manifest:
+            return manifest
+    return fallback
+
+
 def _workspace_dependencies(repository: Path) -> dict:
-    path = repository / "Cargo.toml"
-    if not path.is_file():
-        return {}
-    manifest = _read_manifest(path)
-    return manifest.get("workspace", {}).get("dependencies", {})
+    """Читает общие зависимости workspace."""
+    return _workspace_manifest(repository).get(
+        "workspace", {}
+    ).get("dependencies", {})
 
 
 def _dependency_tables(manifest: dict) -> list[dict]:
+    """Собирает обычные и build-таблицы зависимостей."""
     tables = []
     for key in ("dependencies", "build-dependencies"):
         value = manifest.get(key, {})
@@ -104,37 +160,49 @@ def _dependency_tables(manifest: dict) -> list[dict]:
     return tables
 
 
-def _dependency_value(value: object, workspace: dict) -> tuple:
+def _dependency_value(value: object, workspace: dict, alias: str) -> tuple:
+    """Разбирает алиас, версию и источник одного объявления."""
     if isinstance(value, str):
-        return "", value, "", "", False
+        return "", value, "", "", "", False
     if not isinstance(value, dict):
-        return "", "*", "", "", False
+        return "", "*", "", "", "", False
     if value.get("workspace") is True:
-        inherited = workspace.get(value.get("package", ""))
+        workspace_key = alias
+        if workspace_key not in workspace:
+            workspace_key = value.get("package", "")
+        inherited = workspace.get(workspace_key)
         if isinstance(inherited, str):
-            return "", inherited, "", "", False
+            return "", inherited, "", "", "", False
         if isinstance(inherited, dict):
             value = {**inherited, **value}
     return (
         str(value.get("package", "")),
         str(value.get("version", "*")),
         str(value.get("git", "")),
+        str(
+            value.get("branch")
+            or value.get("tag")
+            or value.get("rev")
+            or ""
+        ),
         str(value.get("path", "")),
         bool(value.get("optional", False)),
     )
 
 
 def _collect_dependencies(manifest: dict, workspace: dict) -> tuple:
+    """Объединяет зависимости с одинаковым именем пакета."""
     dependencies = {}
     for table in _dependency_tables(manifest):
         for alias, value in table.items():
-            details = _dependency_value(value, workspace)
-            package_name, version, git_url, path, optional = details
+            details = _dependency_value(value, workspace, alias)
+            package_name, version, git_url, git_ref, path, optional = details
             name = package_name or alias
             dependencies[name] = Dependency(
                 name,
                 version,
                 git_url,
+                git_ref,
                 path,
                 optional,
             )
@@ -147,7 +215,7 @@ def load_package(repository: Path, name: str) -> CargoPackage:
     package = manifest["package"]
     version = package.get("version", "не указана")
     if isinstance(version, dict) and version.get("workspace") is True:
-        workspace = _read_manifest(repository / "Cargo.toml")
+        workspace = _workspace_manifest(repository)
         version = workspace.get("workspace", {}).get("package", {}).get(
             "version", "не указана"
         )
@@ -174,9 +242,12 @@ def dependency_lines(package: CargoPackage) -> list[str]:
 
 
 def _format_dependency(dependency: Dependency) -> str:
+    """Форматирует зависимость вместе с её источником."""
     suffix = f" ({dependency.requirement})"
     if dependency.git_url:
         suffix += f" git={dependency.git_url}"
+        if dependency.git_ref:
+            suffix += f"#{dependency.git_ref}"
     if dependency.path:
         suffix += f" path={dependency.path}"
     return f"{dependency.name}{suffix}"

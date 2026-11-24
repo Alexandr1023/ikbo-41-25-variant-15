@@ -9,6 +9,8 @@ from typing import Callable, Iterable
 from dependency_graph.errors import DependencyGraphError
 
 _PACKAGE_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+ARROW_PARTS_LIMIT = 2
+SINGLE_PART_COUNT = 1
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,7 @@ class DependencyGraph:
 
 
 def _valid_name(value: str, line_number: int) -> str:
+    """Проверяет имя узла тестового графа."""
     name = value.strip()
     if not _PACKAGE_NAME.fullmatch(name):
         raise DependencyGraphError(
@@ -53,13 +56,13 @@ def parse_test_graph(path: Path) -> dict[str, tuple[str, ...]]:
         if not content:
             continue
         parts = content.split("->")
-        if len(parts) > 2:
+        if len(parts) > ARROW_PARTS_LIMIT:
             raise DependencyGraphError(
                 f"Строка {number}: допускается только один оператор ->."
             )
         source = _valid_name(parts[0], number)
         adjacency.setdefault(source, set())
-        if len(parts) == 1 or not parts[1].strip():
+        if len(parts) == SINGLE_PART_COUNT or not parts[1].strip():
             continue
         for item in parts[1].split(","):
             adjacency[source].add(_valid_name(item, number))

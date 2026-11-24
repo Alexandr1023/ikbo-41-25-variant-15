@@ -12,6 +12,7 @@ _PACKAGE_LINE = re.compile(r"^([A-Za-z0-9_-]+) v([^\s]+)")
 
 
 def _node_id(line: str) -> str:
+    """Выделяет имя и версию пакета из строки Cargo."""
     match = _PACKAGE_LINE.match(line.strip())
     if not match:
         raise DependencyGraphError(
@@ -34,23 +35,33 @@ def parse_cargo_tree(output: str) -> DependencyGraph:
                 adjacency.setdefault(root, set())
             continue
         if not root:
-            raise DependencyGraphError("В выводе cargo tree нет корневого пакета.")
+            raise DependencyGraphError(
+                "В выводе cargo tree нет корневого пакета."
+            )
         depth = len(line[:connector.start()]) // 4 + 1
         node = _node_id(connector.group(1))
         stack = stack[:depth]
         if len(stack) != depth:
-            raise DependencyGraphError("Не удалось разобрать уровни cargo tree.")
+            raise DependencyGraphError(
+                "Не удалось разобрать уровни cargo tree."
+            )
         adjacency.setdefault(stack[-1], set()).add(node)
         adjacency.setdefault(node, set())
         stack.append(node)
     if not root:
-        raise DependencyGraphError("Команда cargo tree вернула пустой результат.")
+        raise DependencyGraphError(
+            "Команда cargo tree вернула пустой результат."
+        )
     ordered = {node: tuple(sorted(edges)) for node, edges in adjacency.items()}
     order = _preorder(root, ordered)
     return DependencyGraph(root, ordered, order)
 
 
-def _preorder(root: str, adjacency: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
+def _preorder(
+    root: str,
+    adjacency: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    """Возвращает порядок узлов в распечатанном дереве."""
     pending = [root]
     seen = set()
     result = []
