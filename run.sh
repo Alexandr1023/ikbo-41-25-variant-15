@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+set -eu
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -m dependency_graph "$@"
+
