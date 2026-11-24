@@ -14,6 +14,9 @@ class Dependency:
 
     name: str
     requirement: str
+    git_url: str = ""
+    path: str = ""
+    optional: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,27 +104,40 @@ def _dependency_tables(manifest: dict) -> list[dict]:
     return tables
 
 
-def _dependency_value(value: object, workspace: dict) -> tuple[str, str]:
+def _dependency_value(value: object, workspace: dict) -> tuple:
     if isinstance(value, str):
-        return "", value
+        return "", value, "", "", False
     if not isinstance(value, dict):
-        return "", "*"
+        return "", "*", "", "", False
     if value.get("workspace") is True:
         inherited = workspace.get(value.get("package", ""))
         if isinstance(inherited, str):
-            return "", inherited
+            return "", inherited, "", "", False
         if isinstance(inherited, dict):
             value = {**inherited, **value}
-    return str(value.get("package", "")), str(value.get("version", "*"))
+    return (
+        str(value.get("package", "")),
+        str(value.get("version", "*")),
+        str(value.get("git", "")),
+        str(value.get("path", "")),
+        bool(value.get("optional", False)),
+    )
 
 
 def _collect_dependencies(manifest: dict, workspace: dict) -> tuple:
     dependencies = {}
     for table in _dependency_tables(manifest):
         for alias, value in table.items():
-            package_name, version = _dependency_value(value, workspace)
+            details = _dependency_value(value, workspace)
+            package_name, version, git_url, path, optional = details
             name = package_name or alias
-            dependencies[name] = Dependency(name, version)
+            dependencies[name] = Dependency(
+                name,
+                version,
+                git_url,
+                path,
+                optional,
+            )
     return tuple(sorted(dependencies.values(), key=lambda item: item.name))
 
 
@@ -129,13 +145,19 @@ def load_package(repository: Path, name: str) -> CargoPackage:
     """Ищет пакет и читает его обычные и build-зависимости."""
     path, manifest = _find_package(repository, name)
     package = manifest["package"]
+    version = package.get("version", "не указана")
+    if isinstance(version, dict) and version.get("workspace") is True:
+        workspace = _read_manifest(repository / "Cargo.toml")
+        version = workspace.get("workspace", {}).get("package", {}).get(
+            "version", "не указана"
+        )
     dependencies = _collect_dependencies(
         manifest,
         _workspace_dependencies(repository),
     )
     return CargoPackage(
         name=package["name"],
-        version=str(package.get("version", "не указана")),
+        version=str(version),
         manifest_path=path,
         dependencies=dependencies,
     )
@@ -146,7 +168,16 @@ def dependency_lines(package: CargoPackage) -> list[str]:
     if not package.dependencies:
         return ["Прямых зависимостей нет."]
     return [
-        f"{dependency.name} ({dependency.requirement})"
+        _format_dependency(dependency)
         for dependency in package.dependencies
     ]
+
+
+def _format_dependency(dependency: Dependency) -> str:
+    suffix = f" ({dependency.requirement})"
+    if dependency.git_url:
+        suffix += f" git={dependency.git_url}"
+    if dependency.path:
+        suffix += f" path={dependency.path}"
+    return f"{dependency.name}{suffix}"
 

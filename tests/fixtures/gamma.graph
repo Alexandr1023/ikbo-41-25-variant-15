@@ -1,0 +1,6 @@
+# Две независимые ветви сходятся к одному узлу.
+GAMMA -> KAPPA, LAMBDA
+KAPPA -> MU
+LAMBDA -> MU
+MU
+

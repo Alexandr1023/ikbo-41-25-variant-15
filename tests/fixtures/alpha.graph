@@ -1,0 +1,7 @@
+# Общий узел и ромбовидная зависимость.
+ALPHA -> BRAVO, CHARLIE
+BRAVO -> DELTA
+CHARLIE -> DELTA, ECHO
+DELTA
+ECHO
+
