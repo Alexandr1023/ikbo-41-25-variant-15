@@ -11,6 +11,7 @@ from dependency_graph.cargo import (
     load_package,
 )
 from dependency_graph.cargo_graph import build_cargo_graph
+from dependency_graph.cargo_tree import cargo_tree_graph, edge_difference
 from dependency_graph.config import (
     ConfigurationError,
     format_config,
@@ -18,6 +19,7 @@ from dependency_graph.config import (
 )
 from dependency_graph.errors import DependencyGraphError
 from dependency_graph.graph import build_test_graph, parse_test_graph
+from dependency_graph.order import load_order
 
 
 def _arguments() -> argparse.Namespace:
@@ -77,28 +79,73 @@ def _print_graph(graph) -> None:
         print(f"- {node} -> {dependency}")
 
 
+def _load_graph(config, temporary_root: Path):
+    if config.test_mode:
+        return build_test_graph(Path(config.source), config.package_name), None
+    repository = temporary_root / "repository"
+    clone_repository(config.source, repository)
+    package = load_package(repository, config.package_name)
+    graph = build_cargo_graph(repository, package, temporary_root)
+    return graph, package
+
+
 def _run_stage_three(config) -> int:
     try:
-        if config.test_mode:
-            graph = build_test_graph(Path(config.source), config.package_name)
-        else:
-            with tempfile.TemporaryDirectory() as temporary:
-                temporary_root = Path(temporary)
-                repository = temporary_root / "repository"
-                clone_repository(config.source, repository)
-                package = load_package(repository, config.package_name)
-                graph = build_cargo_graph(
-                    repository,
-                    package,
-                    temporary_root,
-                )
-                _print_graph(graph)
-                return 0
+        with tempfile.TemporaryDirectory() as temporary:
+            graph, _ = _load_graph(config, Path(temporary))
     except (DependencyGraphError, OSError) as error:
         print(f"Ошибка построения графа: {error}", file=sys.stderr)
         return 2
     _print_graph(graph)
     return 0
+
+
+def _run_stage_four(config) -> int:
+    try:
+        with tempfile.TemporaryDirectory() as temporary:
+            graph, package = _load_graph(config, Path(temporary))
+            _print_graph(graph)
+            try:
+                order = load_order(graph)
+                print("Порядок загрузки: " + " -> ".join(order))
+            except DependencyGraphError as error:
+                print(str(error))
+            if config.test_mode:
+                print("Сравнение с cargo tree пропущено: тестовый граф.")
+                return 0
+            if package is None:
+                return 0
+            comparison = cargo_tree_graph(
+                package.manifest_path,
+                package.name,
+            )
+            if comparison is None:
+                print("Сравнение не выполнено: cargo не установлен.")
+                return 0
+            _print_cargo_comparison(graph, comparison)
+    except (DependencyGraphError, OSError) as error:
+        print(f"Ошибка сравнения: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _print_cargo_comparison(graph, comparison) -> None:
+    missing, extra = edge_difference(graph, comparison)
+    try:
+        cargo_order = load_order(comparison)
+    except DependencyGraphError as error:
+        print(f"Порядок cargo tree не вычислен: {error}")
+    else:
+        print("Порядок cargo tree: " + " -> ".join(cargo_order))
+    if not missing and not extra:
+        print("Граф совпадает с cargo tree.")
+        return
+    print(f"Рёбер только в cargo tree: {len(missing)}")
+    print(f"Рёбер только в BFS-графе: {len(extra)}")
+    print(
+        "Возможные причины: версии без Cargo.lock, активные features "
+        "или целевые платформы."
+    )
 
 
 def main() -> int:
@@ -116,6 +163,8 @@ def main() -> int:
         return _run_stage_two(config)
     if args.stage == 3:
         return _run_stage_three(config)
+    if args.stage == 4:
+        return _run_stage_four(config)
     if args.stage is None:
         return _run_stage_three(config)
     print("Выбранный этап ещё не реализован.")
