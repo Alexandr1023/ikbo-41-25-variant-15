@@ -60,6 +60,25 @@ chmod +x run.sh
 4. Порядок загрузки зависимостей и сравнение с `cargo tree`.
 5. Экспорт диаграммы D2 и изображения SVG.
 
+### Этап 2. Получение прямых зависимостей
+
+Этап 2 клонирует URL и читает таблицы `[dependencies]` и
+`[build-dependencies]` выбранного пакета. Учитываются зависимости из
+таблиц целевой платформы и `[workspace.dependencies]`. Таблица
+`[dev-dependencies]` исключена из графа загрузки.
+
+```ini
+[application]
+package_name = serde
+source = https://github.com/serde-rs/serde
+test_mode = false
+output_file = dependency-graph.svg
+```
+
+```sh
+./run.sh --config config.ini --stage 2
+```
+
 ## Проверка тестов
 
 ```sh

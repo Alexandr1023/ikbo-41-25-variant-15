@@ -3,12 +3,19 @@
 import argparse
 from pathlib import Path
 import sys
+import tempfile
 
+from dependency_graph.cargo import (
+    clone_repository,
+    dependency_lines,
+    load_package,
+)
 from dependency_graph.config import (
     ConfigurationError,
     format_config,
     load_config,
 )
+from dependency_graph.errors import DependencyGraphError
 
 
 def _arguments() -> argparse.Namespace:
@@ -38,10 +45,23 @@ def main() -> int:
     except ConfigurationError as error:
         print(f"Ошибка конфигурации: {error}", file=sys.stderr)
         return 2
-    if args.stage in (None, 1):
+    if args.stage == 1:
         print(format_config(config))
-        if args.stage == 1:
-            return 0
-    print("Этапы 2–5 будут добавлены в следующих версиях.")
+        return 0
+    if args.stage == 2:
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                repository = Path(temporary) / "repository"
+                clone_repository(config.source, repository)
+                package = load_package(repository, config.package_name)
+                print(f"Прямые зависимости {package.name}:")
+                for line in dependency_lines(package):
+                    print(f"- {line}")
+        except (DependencyGraphError, OSError) as error:
+            print(f"Ошибка получения данных: {error}", file=sys.stderr)
+            return 2
+        return 0
+    if args.stage is None:
+        print("Для запуска укажите реализованный этап через --stage.")
     return 0
 
